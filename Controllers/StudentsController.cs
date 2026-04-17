@@ -97,21 +97,116 @@ public class StudentsController(IConfiguration config) : ControllerBase
         return rows == 0 ? NotFound() : NoContent();
     }
 
+    
     [HttpPost("calculate-grades")]
     public async Task<ActionResult<List<Student>>> CalculateGrades()
     {
+        // List to store students after grades are calculated
         var studentsWithGrade = new List<Student>();
 
-        // Write code to calculate and update grades
+        // Create and open a connection to the database
+        using var conn = new SqlConnection(_connectionString);
+        await conn.OpenAsync();
 
+        // SQL query to retrieve all students without grades
+        using var selectCmd = new SqlCommand("SELECT Id, Name, Course, Marks FROM Students", conn);
+        using var reader = await selectCmd.ExecuteReaderAsync();
+
+        // Temporary list to store students fetched from the database
+        var students = new List<Student>();
+
+        // Read each row from the result set
+        while (await reader.ReadAsync())
+
+        {
+            students.Add(new Student
+            {
+                // Map database columns to Student object properties
+                Id = reader.GetInt32(0),
+                Name = reader.GetString(1),
+                Course = reader.GetString(2),
+                Marks = reader.GetInt32(3)
+            });
+        }
+        // Close the reader before executing another SQL command
+        await reader.CloseAsync();
+
+        // Loop through each student to calculate and update grades
+        foreach (var student in students)
+        {
+            // Calculate grade based on marks using helper method
+            student.Grade = GetGrade(student.Marks);
+
+            // SQL command to update the Grade column in the database
+            using var updateCmd = new SqlCommand(
+                "UPDATE Students SET Grade = @Grade WHERE Id = @Id", conn);
+
+            // Add parameters to prevent SQL injection
+            updateCmd.Parameters.AddWithValue("@Grade", student.Grade);
+            updateCmd.Parameters.AddWithValue("@Id", student.Id);
+
+            // Execute the update command
+            await updateCmd.ExecuteNonQueryAsync();
+            
+            // Add updated student to the result list
+            studentsWithGrade.Add(student);
+        }
+        // Return the list of students with updated grades
         return studentsWithGrade;
     }
 
+    // TO BE IMPLEMENTED
     [HttpGet("report")]
     public async Task<IActionResult> Report()
     {
-        // Write code for the report generation logic.
-        return Ok();
+        // List to store the final course-wise report
+        var report = new List<object>();
+
+        // Create and open a connection to the database
+        using var conn = new SqlConnection(_connectionString);
+        await conn.OpenAsync();
+
+        // SQL query to group students by course and calculate statistics
+        using var cmd = new SqlCommand(@"
+            SELECT 
+                Course,
+                COUNT(*) AS TotalStudents,
+                AVG(CAST(Marks AS FLOAT)) AS AverageMarks,
+                SUM(CASE WHEN Grade = 'A' THEN 1 ELSE 0 END) AS GradeA,
+                SUM(CASE WHEN Grade = 'B' THEN 1 ELSE 0 END) AS GradeB,
+                SUM(CASE WHEN Grade = 'C' THEN 1 ELSE 0 END) AS GradeC,
+                SUM(CASE WHEN Grade = 'D' THEN 1 ELSE 0 END) AS GradeD
+            FROM Students
+            GROUP BY Course
+            ORDER BY Course", conn);
+
+        // Execute the query and get the result set    
+        using var reader = await cmd.ExecuteReaderAsync();
+
+        // Read each row (each course) from the result
+        while (await reader.ReadAsync())
+        {
+            report.Add(new
+            {
+                // Map database values to response object
+                courseName = reader.GetString(0),
+                totalStudents = reader.GetInt32(1),
+
+                // Round average marks to 2 decimal places
+                averageMarks = Math.Round(reader.GetDouble(2), 2),
+                
+                // Create a nested object for grade distribution
+                gradeDistribution = new
+                {
+                    A = reader.GetInt32(3),
+                    B = reader.GetInt32(4),
+                    C = reader.GetInt32(5),
+                    D = reader.GetInt32(6)
+                }
+            });
+        }
+        // Return the report as JSON response with HTTP 200 OK
+        return Ok(report);
     }
 
     [HttpDelete("{id}")]
